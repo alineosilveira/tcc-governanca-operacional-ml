@@ -272,12 +272,18 @@ def main():
     rel = rel[cols_rel].sort_values(["Project_Key", "Release_Date"])
 
     # ---------------- Base de bugs ----------------
-    b = iss[(iss.Type == "Bug") & iss.Resolution.isin(RESOLUCOES_CORRIGIDO) & iss.Resolution_Date.notna()].copy()
-    b["Dias_Para_Corrigir"] = (b.Resolution_Date - b.Creation_Date).dt.total_seconds() / 86400
-    b = b[b.Dias_Para_Corrigir >= 0]
-    # corte de censura: só bugs abertos até 12 meses antes do fim da coleta de cada projeto
+    # todos os bugs abertos até 12 meses antes do fim da coleta de cada projeto
+    # (os corrigidos formam a base_bugs; todos, com censura, formam a base de sobrevivência)
+    b = iss[iss.Type == "Bug"].copy()
+    b = b[~(b.Resolution_Date.notna() & (b.Resolution_Date < b.Creation_Date))]   # datas inconsistentes
     b = b.merge(proj[["Project_Key", "Last_Update_Date"]], on="Project_Key")
     b = b[b.Creation_Date <= b.Last_Update_Date - pd.Timedelta(days=365)]
+    b["Dias_Para_Corrigir"] = (b.Resolution_Date - b.Creation_Date).dt.total_seconds() / 86400
+    b["Evento_Corrigido"] = (b.Resolution.isin(RESOLUCOES_CORRIGIDO) & b.Resolution_Date.notna()).astype(int)
+    fim = b.Resolution_Date.where(b.Resolution_Date.notna(), b.Last_Update_Date)
+    b["Tempo_Dias"] = (fim - b.Creation_Date).dt.total_seconds() / 86400
+    b["Situacao_Final"] = np.select([b.Evento_Corrigido == 1, b.Resolution_Date.notna()],
+                                    ["corrigido", "encerrado_sem_correcao"], "aberto_na_coleta")
 
     # release afetada (a mais antiga publicada entre as versões afetadas)
     av = affv.join(ver.set_index("Version_ID")[["Release_Date", "Tipo_Release"]], on="Version_ID", how="inner")
@@ -353,8 +359,16 @@ def main():
               "Assignee_ID", "Tem_Responsavel", "Carga_Responsavel", "Participacao_Responsavel_No_Projeto",
               "Horas_Apontadas", "Qtd_Reaberturas", "Foi_Reaberto", "Qtd_Duplicados", "Escalou_Prioridade",
               "Alto_Impacto", "Dias_Para_Corrigir", "Faixa_Correcao"]
-    b = b[cols_b].rename(columns={"ID": "Issue_ID", "Assignee_ID": "Responsavel_ID", "Title_Len": "Tamanho_Titulo",
-                                  "Desc_Len": "Tamanho_Descricao", "Desc_Code_Len": "Tamanho_Codigo_Descricao"})
+    ren = {"ID": "Issue_ID", "Assignee_ID": "Responsavel_ID", "Title_Len": "Tamanho_Titulo",
+           "Desc_Len": "Tamanho_Descricao", "Desc_Code_Len": "Tamanho_Codigo_Descricao"}
+    cols_s = [c for c in cols_b if c not in ("Resolution_Date", "Horas_Apontadas", "Qtd_Reaberturas", "Foi_Reaberto",
+                                             "Qtd_Duplicados", "Escalou_Prioridade", "Alto_Impacto",
+                                             "Dias_Para_Corrigir", "Faixa_Correcao")]
+    surv = b[cols_s + ["Situacao_Final", "Evento_Corrigido", "Tempo_Dias"]].rename(columns=ren).sort_values("Creation_Date")
+    surv.to_csv(os.path.join(OUT, "base_bugs_sobrevivencia.csv"), index=False)
+    print(f"base_bugs_sobrevivencia: {len(surv):,} bugs ({surv.Evento_Corrigido.mean():.1%} corrigidos)")
+    b = b[b.Evento_Corrigido == 1]
+    b = b[cols_b].rename(columns=ren)
     b = b.sort_values("Creation_Date")
 
     b.to_csv(os.path.join(OUT, "base_bugs.csv"), index=False)
@@ -438,6 +452,10 @@ def main():
         ("base_sprints", "Velocity_SP / Velocity_Media_3_Anteriores", "Story points entregues e média dos 3 sprints anteriores", "descritiva (P1)"),
         ("base_itens_sprint", "(1 linha por item planejado em um sprint)", "Tipo, prioridade, story points, carga do responsável no sprint, vezes que já passou por sprints", "features (P1)"),
         ("base_itens_sprint", "Nao_Concluiu_No_Sprint", "1 se o item planejado não foi concluído dentro do sprint", "alvo (P1)"),
+        ("base_bugs_sobrevivencia", "(mesmas variáveis explicativas da base_bugs)", "Todos os bugs abertos até 12 meses antes do fim da coleta, corrigidos ou não", "features (robustez)"),
+        ("base_bugs_sobrevivencia", "Situacao_Final", "corrigido / encerrado_sem_correcao / aberto_na_coleta", "descritiva"),
+        ("base_bugs_sobrevivencia", "Evento_Corrigido", "1 se o bug foi corrigido; 0 = observação censurada", "alvo (sobrevivência)"),
+        ("base_bugs_sobrevivencia", "Tempo_Dias", "Dias até a correção ou até a censura (encerramento sem correção ou fim da coleta)", "alvo (sobrevivência)"),
         ("base_capacidade_mensal", "Project_Key / Mes", "Projeto e mês de resolução", "id"),
         ("base_capacidade_mensal", "Sustentacao_Bugs / Evolucao_Features / Outros", "Itens resolvidos no mês por categoria", "descritiva (P3)"),
         ("base_capacidade_mensal", "Pct_Sustentacao", "% da capacidade do mês gasta em correção de bugs", "descritiva (P3)"),

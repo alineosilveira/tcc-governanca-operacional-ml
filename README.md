@@ -14,16 +14,16 @@ Avaliar como técnicas de analytics e aprendizado de máquina, aplicadas aos reg
 | Opção | Como |
 |---|---|
 | Ver os resultados no navegador | Abra [`TCC_Analise_e_Modelos.ipynb`](TCC_Analise_e_Modelos.ipynb) aqui no GitHub (já salvo com todas as saídas) |
-| Executar online | Botão **Open in Colab** acima → *Ambiente de execução > Executar tudo* (≈ 4 a 5 min) |
+| Executar online | Botão **Open in Colab** acima → *Ambiente de execução > Executar tudo* (≈ 5 a 8 min) |
 | Ver offline | Baixe [`TCC_Analise_e_Modelos.html`](TCC_Analise_e_Modelos.html) e abra no navegador |
-| Executar no computador | `pip install -r requirements.txt` e abra o notebook no Jupyter ou VS Code |
+| Executar no computador | `pip install -r requirements.txt` e abra o notebook no Jupyter ou VS Code (≈ 8 min) |
 
 ## Estrutura
 
 ```
 TCC_Analise_e_Modelos.ipynb   análises descritivas, testes estatísticos e modelos preditivos
 TCC_Analise_e_Modelos.html    versão estática do notebook
-bases/                        bases analíticas (CSV) e bases_tcc.xlsx com o dicionário de dados
+bases/                        bases analíticas (CSV, inclusive a base de sobrevivência) e bases_tcc.xlsx com o dicionário de dados
 figuras/                      gráficos gerados pelo notebook
 extrair_tawos.py              extrai do dump da TAWOS (TAWOS.sql.zip) os CSVs necessários
 preparar_bases.py             gera as bases analíticas a partir dos CSVs extraídos
@@ -38,7 +38,8 @@ requirements.txt              bibliotecas utilizadas
 4. Modelo 1 – faixa de tempo de correção (regressão logística, Random Forest, XGBoost; validação temporal; SHAP)
 5. Modelo 2 – release de alto risco
 6. Perguntas complementares: previsibilidade dos sprints, capacidade (sustentação × evolução), concentração de trabalho, reabertura de bugs e impacto em clientes
-7. Conclusões e 8. Limitações
+7. Robustez das escolhas: Poisson × Binomial Negativa, análise de sobrevivência (Kaplan-Meier e Cox), ajuste de hiperparâmetros com validação temporal, intervalos de confiança por bootstrap e calibração
+8. Conclusões e 9. Limitações
 
 ## Reproduzir as bases do zero (opcional)
 
