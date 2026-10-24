@@ -63,6 +63,9 @@ def classificar_versao(nome):
     return tipo, ma, mi, pa
 
 
+DIAG, FUNIL = {}, []
+
+
 def montar_sprints(iss, chg, proj):
     """Reconstrói, a partir do histórico do campo Sprint, o que foi planejado, adicionado, removido,
     concluído e o que "escorregou" (spillover) em cada sprint fechado."""
@@ -70,10 +73,13 @@ def montar_sprints(iss, chg, proj):
     spr = ler("Sprint.csv").merge(proj[["Project_ID", "Project_Key"]], on="Project_ID")
     for c in ["Start_Date", "End_Date", "Complete_Date"]:
         spr[c] = pd.to_datetime(spr[c], errors="coerce")
+    FUNIL.append(("Sprints", "Sprints registrados nos projetos selecionados", len(spr)))
     spr = spr[(spr.State == "CLOSED") & spr.Start_Date.notna() & spr.Complete_Date.notna()]
     spr = spr[spr.Complete_Date > spr.Start_Date]
+    FUNIL.append(("Sprints", "encerrados e com datas de início e fim", len(spr)))
     dup = spr.duplicated(["Project_Key", "Name"], keep=False)       # nomes ambíguos no mesmo projeto
     spr = spr[~dup].rename(columns={"ID": "Sprint_ID", "Name": "Sprint"})
+    FUNIL.append(("Sprints", "com nome não ambíguo no projeto", len(spr)))
 
     ev = chg[chg.Field == "Sprint"][["Issue_ID", "From_String", "To_String", "Creation_Date"]].copy()
     ev = ev.merge(iss[["ID", "Project_Key"]], left_on="Issue_ID", right_on="ID").sort_values("Creation_Date")
@@ -85,7 +91,21 @@ def montar_sprints(iss, chg, proj):
             linhas.append((r.Issue_ID, r.Project_Key, n, r.Creation_Date, 1))
         for n in de - para:
             linhas.append((r.Issue_ID, r.Project_Key, n, r.Creation_Date, -1))
-    mv = pd.DataFrame(linhas, columns=["Issue_ID", "Project_Key", "Sprint", "Data", "Mov"])
+    # o Jira não registra no histórico o sprint definido já na criação do item: recupera-se esse valor inicial
+    # (a) pelo "From" do primeiro evento de sprint e (b) pelo sprint final dos itens sem nenhum evento de sprint
+    criado = iss.set_index("ID").Creation_Date
+    prim = ev.drop_duplicates("Issue_ID")
+    for r in prim.itertuples(index=False):
+        for n in tok(r.From_String):
+            linhas.append((r.Issue_ID, r.Project_Key, n, criado[r.Issue_ID], 1))
+    nomes = spr.set_index("Sprint_ID").Sprint
+    sem_ev = iss[iss.Sprint_ID.notna() & ~iss.ID.isin(ev.Issue_ID)]
+    for r in sem_ev.itertuples(index=False):
+        sid = int(r.Sprint_ID)
+        if sid in nomes.index:
+            linhas.append((r.ID, r.Project_Key, nomes[sid], r.Creation_Date, 1))
+    DIAG["Sprints: itens com sprint definido na criação (recuperados)"] = int(len(sem_ev) + prim.From_String.notna().sum())
+    mv = pd.DataFrame(linhas, columns=["Issue_ID", "Project_Key", "Sprint", "Data", "Mov"]).sort_values("Data", kind="stable")
     mv = mv.merge(spr[["Project_Key", "Sprint", "Sprint_ID", "Start_Date", "Complete_Date"]], on=["Project_Key", "Sprint"])
 
     def estado_em(g, t):
@@ -126,8 +146,17 @@ def montar_sprints(iss, chg, proj):
         "Pessoas_No_Sprint": d.loc[d.Planejado | d.Adicionado_Durante, "Assignee_ID"].nunique(),
     }))
     s = spr.set_index("Sprint_ID").join(agg, how="inner").reset_index()
+    FUNIL.append(("Sprints", "com itens reconstruídos pelo histórico", len(s)))
     s["Duracao_Dias"] = (s.Complete_Date - s.Start_Date).dt.total_seconds() / 86400
     s = s[(s.Itens_Planejados >= 3) & (s.Duracao_Dias >= 3) & (s.Duracao_Dias <= 60)]
+    FUNIL.append(("Sprints", "com pelo menos três itens planejados e duração de 3 a 60 dias", len(s)))
+    # validação da reconstrução (parecer C11): itens cujo sprint final (Issue.Sprint_ID) é um sprint incluído
+    # devem aparecer na reconstrução como presentes nesse sprint no fechamento
+    fin = iss[iss.Sprint_ID.isin(s.Sprint_ID)][["ID", "Sprint_ID"]].rename(columns={"ID": "Issue_ID"})
+    fin["Sprint_ID"] = fin.Sprint_ID.astype(int)
+    chk = fin.merge(m[["Sprint_ID", "Issue_ID", "No_Fim"]], on=["Sprint_ID", "Issue_ID"], how="left")
+    DIAG["Validação sprints: itens cujo sprint final é um sprint incluído"] = len(chk)
+    DIAG["Validação sprints: % reconstruídos como presentes no fechamento desse sprint"] = round(100 * chk.No_Fim.fillna(False).astype(bool).mean(), 1)
     s["Taxa_Cumprimento"] = s.Planejados_Concluidos / s.Itens_Planejados
     s["Taxa_Escorregamento"] = s.Itens_Escorregaram / s.Itens_No_Fim.replace(0, np.nan)
     s["Pct_Escopo_Adicionado"] = s.Itens_Adicionados_Durante / s.Itens_Planejados
@@ -165,11 +194,14 @@ def montar_sprints(iss, chg, proj):
               "Vezes_Em_Sprints_Anteriores", "Duracao_Dias", "Itens_Planejados", "SP_Planejados",
               "Pessoas_No_Sprint", "Taxa_Cumprimento_Anterior", "Removido_Durante", "Nao_Concluiu_No_Sprint"]
     p = p[cols_p].rename(columns={"Desc_Len": "Tamanho_Descricao", "Duracao_Dias": "Duracao_Sprint_Dias"})
+    FUNIL.append(("Itens de sprint", "Itens planejados no início dos sprints incluídos", len(p)))
     p["Removido_Durante"] = p.Removido_Durante.astype(int)
     return s, p.sort_values("Start_Date")
 
 
 def main():
+    global DIAG, FUNIL
+    DIAG, FUNIL = {}, []
     print("Lendo CSVs da TAWOS...")
     proj = ler("Project.csv")[["ID", "Project_Key", "Last_Update_Date"]].rename(columns={"ID": "Project_ID"})
     proj = proj[proj.Project_Key.isin(PROJETOS)]
@@ -199,13 +231,16 @@ def main():
     ver = ler("Version.csv").rename(columns={"ID": "Version_ID", "Name": "Versao"})
     ver = ver.merge(proj, on="Project_ID")
     ver["Release_Date"] = pd.to_datetime(ver.Release_Date, errors="coerce")
+    FUNIL.append(("Releases", "Versões cadastradas nos dez projetos", len(ver)))
     ver = ver[(ver.Released == 1) & ver.Release_Date.notna()].copy()
+    FUNIL.append(("Releases", "publicadas e com data de publicação", len(ver)))
     cls = ver.Versao.apply(classificar_versao)
     ver["Tipo_Release"] = [c[0] for c in cls]
     ver["V_Major"] = [c[1] for c in cls]
     ver["V_Minor"] = [c[2] for c in cls]
     ver["V_Patch"] = [c[3] for c in cls]
     ver = ver[ver.Tipo_Release.notna()].sort_values(["Project_Key", "Release_Date"])
+    FUNIL.append(("Releases", "com numeração identificável (x.y.z)", len(ver)))
     ver["Dias_Desde_Release_Anterior"] = ver.groupby("Project_Key").Release_Date.diff().dt.days
     # só releases com janela pós-release completa dentro do período coberto pela base
     ver["Janela_Completa"] = ver.Release_Date + pd.Timedelta(days=JANELA_POS_RELEASE) <= ver.Last_Update_Date
@@ -214,6 +249,44 @@ def main():
     affv = ler("Affected_Version.csv").rename(columns={"Affected_Version_ID": "Version_ID"})
     fixv = fixv[fixv.Version_ID.isin(ver.Version_ID) & fixv.Issue_ID.isin(iss.ID)]
     affv = affv[affv.Version_ID.isin(ver.Version_ID) & affv.Issue_ID.isin(iss.ID)]
+
+    # ---- reconstrução histórica pelo Change_Log (parecer C6) ----
+    # nomes de versão -> ID (por projeto) para interpretar os eventos "Fix Version" e "Version"
+    vfull = ler("Version.csv")[["ID", "Name", "Project_ID"]].merge(proj[["Project_ID", "Project_Key"]], on="Project_ID")
+    vfull = vfull.drop_duplicates(["Project_Key", "Name"], keep=False)
+    vmap = {(k, n): i for k, n, i in zip(vfull.Project_Key, vfull.Name, vfull.ID)}
+    evs = chg[chg.Field.isin(["Fix Version", "Version"])].merge(
+        iss[["ID", "Project_Key", "Creation_Date"]].rename(columns={"ID": "Issue_ID", "Creation_Date": "Criado"}), on="Issue_ID")
+    evs["id_para"] = [vmap.get((k, n)) for k, n in zip(evs.Project_Key, evs.To_String)]
+    evs["id_de"] = [vmap.get((k, n)) for k, n in zip(evs.Project_Key, evs.From_String)]
+
+    # (a) composição da release NA DATA DE PUBLICAÇÃO: retira itens incluídos depois e devolve os removidos depois
+    rd = ver.set_index("Version_ID").Release_Date
+    fe = evs[evs.Field == "Fix Version"]
+    add = fe[fe.id_para.notna()].assign(Version_ID=lambda d: d.id_para.astype(int))
+    add = add[add.Version_ID.isin(rd.index)]
+    add = add[add.Creation_Date > add.Version_ID.map(rd) + pd.Timedelta(days=1)]
+    rem = fe[fe.id_de.notna()].assign(Version_ID=lambda d: d.id_de.astype(int))
+    rem = rem[rem.Version_ID.isin(rd.index)]
+    rem = rem[rem.Creation_Date > rem.Version_ID.map(rd) + pd.Timedelta(days=1)]
+    k_add = set(zip(add.Issue_ID, add.Version_ID))
+    fixv_final = fixv.copy()
+    fixv = fixv[[t not in k_add for t in zip(fixv.Issue_ID, fixv.Version_ID)]]
+    fixv = pd.concat([fixv, rem[["Issue_ID", "Version_ID"]]]).drop_duplicates()
+    fixv = fixv[fixv.Issue_ID.isin(iss.ID)]
+    DIAG["Vínculos de fix version (estado final)"] = len(fixv_final)
+    DIAG["Vínculos incluídos depois da publicação (retirados)"] = len(fixv_final) - len(fixv_final[[t not in k_add for t in zip(fixv_final.Issue_ID, fixv_final.Version_ID)]])
+    DIAG["Vínculos removidos depois da publicação (devolvidos)"] = len(set(zip(rem.Issue_ID, rem.Version_ID)) - set(zip(fixv_final.Issue_ID, fixv_final.Version_ID)))
+
+    # (b) versões afetadas NO MOMENTO DA ABERTURA do bug (mudanças até 1 hora após a abertura contam como abertura)
+    ae = evs[(evs.Field == "Version") & (evs.Creation_Date > evs.Criado + pd.Timedelta(hours=1))]
+    a_add = set(zip(ae.loc[ae.id_para.notna(), "Issue_ID"], ae.loc[ae.id_para.notna(), "id_para"].astype(int)))
+    a_rem = ae[ae.id_de.notna()][["Issue_ID", "id_de"]].rename(columns={"id_de": "Version_ID"})
+    a_rem["Version_ID"] = a_rem.Version_ID.astype(int)
+    affv_final = affv.copy()
+    affv_ini = affv[[t not in a_add for t in zip(affv.Issue_ID, affv.Version_ID)]]
+    affv_ini = pd.concat([affv_ini, a_rem[a_rem.Version_ID.isin(ver.Version_ID)]]).drop_duplicates()
+    DIAG["Bugs com versão afetada alterada após a abertura"] = ae.Issue_ID.nunique()
 
     # composição de cada release (o que foi entregue nela)
     it = iss.set_index("ID")
@@ -234,6 +307,7 @@ def main():
     agg["Pct_Features"] = agg.Qtd_Features / agg.Qtd_Itens
     agg["Pct_Correcoes"] = agg.Qtd_Correcoes / agg.Qtd_Itens
     agg["Qtd_Componentes_Tocados"] = comp_rel
+    agg["Qtd_Itens_Estado_Final"] = fixv_final.groupby("Version_ID").Issue_ID.nunique()
     rel = ver.set_index("Version_ID").join(agg, how="inner")
     rel["Qtd_Componentes_Tocados"] = rel.Qtd_Componentes_Tocados.fillna(0)
 
@@ -256,10 +330,37 @@ def main():
     rel = rel.join(pos)
     rel[["Bugs_Pos_Release", "Bugs_Pos_Release_Alta"]] = rel[["Bugs_Pos_Release", "Bugs_Pos_Release_Alta"]].fillna(0).astype(int)
     rel["Bugs_Por_Item_Entregue"] = rel.Bugs_Pos_Release / rel.Qtd_Itens
-    rel = rel[rel.Janela_Completa & (rel.Qtd_Itens >= 3)].copy()
-    # alvo binário: release de alto risco = bugs pós-release acima da mediana do próprio projeto
-    med = rel.groupby("Project_Key").Bugs_Pos_Release.transform("median")
-    rel["Alto_Risco"] = (rel.Bugs_Pos_Release > med).astype(int)
+
+    # sensibilidade (parecer C7): janelas de 90 e 365 dias e regra "conta em todas as versões afetadas"
+    a_all = affv.join(bugs_all[["Creation_Date"]], on="Issue_ID", how="inner").join(rel[["Release_Date"]], on="Version_ID", how="inner")
+    a_all["dias"] = (a_all.Creation_Date - a_all.Release_Date).dt.total_seconds() / 86400
+    a_one = affv.join(ver.set_index("Version_ID")[["Release_Date"]], on="Version_ID", how="inner")
+    a_one = a_one.sort_values("Release_Date").drop_duplicates("Issue_ID")[["Issue_ID", "Version_ID"]]
+    a_one = a_one.join(bugs_all[["Creation_Date"]], on="Issue_ID", how="inner").join(rel[["Release_Date"]], on="Version_ID", how="inner")
+    a_one["dias"] = (a_one.Creation_Date - a_one.Release_Date).dt.total_seconds() / 86400
+    for jan in (90, 365):
+        rel[f"Bugs_Pos_Release_{jan}d"] = a_one[(a_one.dias >= 0) & (a_one.dias <= jan)].groupby("Version_ID").size()
+    rel["Bugs_Pos_Release_Todas_Versoes"] = a_all[(a_all.dias >= 0) & (a_all.dias <= JANELA_POS_RELEASE)].groupby("Version_ID").Issue_ID.nunique()
+    for c in ["Bugs_Pos_Release_90d", "Bugs_Pos_Release_365d", "Bugs_Pos_Release_Todas_Versoes"]:
+        rel[c] = rel[c].fillna(0).astype(int)
+    rel["Janela_365d_Completa"] = rel.Release_Date + pd.Timedelta(days=365) <= rel.Last_Update_Date
+
+    n0 = len(rel)
+    rel = rel[rel.Janela_Completa]
+    n1 = len(rel)
+    rel = rel[rel.Qtd_Itens >= 3].copy()
+    n2 = len(rel)
+    # alvo binário SEM informação futura (parecer C5): a release é de alto risco quando seus bugs pós-release
+    # superam a mediana das releases ANTERIORES do mesmo projeto (mínimo de três releases anteriores)
+    rel = rel.sort_values(["Project_Key", "Release_Date"])
+    rel["Mediana_Historica_Bugs"] = rel.groupby("Project_Key").Bugs_Pos_Release.transform(
+        lambda x: x.shift(1).expanding(min_periods=3).median())
+    rel["Alto_Risco"] = (rel.Bugs_Pos_Release > rel.Mediana_Historica_Bugs).astype(int)
+    rel.loc[rel.Mediana_Historica_Bugs.isna(), "Alto_Risco"] = -1
+    FUNIL += [("Releases", "com ao menos um item entregue", n0),
+              ("Releases", "com 180 dias completos de acompanhamento", n1),
+              ("Releases", "com pelo menos três itens entregues na data de publicação", n2),
+              ("Releases", "com ao menos três releases anteriores no projeto (alvo de alto risco)", int((rel.Alto_Risco >= 0).sum()))]
     rel["Ano"] = rel.Release_Date.dt.year
     rel = rel.reset_index()
     cols_rel = ["Version_ID", "Project_Key", "Versao", "Release_Date", "Ano", "Tipo_Release",
@@ -267,17 +368,22 @@ def main():
                 "Qtd_Itens", "Qtd_Features", "Qtd_Correcoes", "Qtd_Outros", "Pct_Features", "Pct_Correcoes",
                 "Qtd_Itens_Alta_Prioridade", "Story_Points_Total", "Qtd_Componentes_Tocados",
                 "Tamanho_Medio_Descricao",
+                "Qtd_Itens_Estado_Final",
                 "Bugs_Pos_Release", "Bugs_Pos_Release_Alta", "Dias_Medianos_Correcao_Pos_Release",
-                "Bugs_Por_Item_Entregue", "Alto_Risco"]
+                "Bugs_Por_Item_Entregue", "Bugs_Pos_Release_90d", "Bugs_Pos_Release_365d", "Janela_365d_Completa",
+                "Bugs_Pos_Release_Todas_Versoes", "Mediana_Historica_Bugs", "Alto_Risco"]
     rel = rel[cols_rel].sort_values(["Project_Key", "Release_Date"])
 
     # ---------------- Base de bugs ----------------
     # todos os bugs abertos até 12 meses antes do fim da coleta de cada projeto
     # (os corrigidos formam a base_bugs; todos, com censura, formam a base de sobrevivência)
     b = iss[iss.Type == "Bug"].copy()
+    FUNIL.append(("Bugs", "Bugs registrados nos dez projetos", len(b)))
     b = b[~(b.Resolution_Date.notna() & (b.Resolution_Date < b.Creation_Date))]   # datas inconsistentes
+    FUNIL.append(("Bugs", "com datas consistentes (resolução não anterior à abertura)", len(b)))
     b = b.merge(proj[["Project_Key", "Last_Update_Date"]], on="Project_Key")
     b = b[b.Creation_Date <= b.Last_Update_Date - pd.Timedelta(days=365)]
+    FUNIL.append(("Bugs", "abertos até 12 meses antes do fim da coleta (base de sobrevivência)", len(b)))
     b["Dias_Para_Corrigir"] = (b.Resolution_Date - b.Creation_Date).dt.total_seconds() / 86400
     b["Evento_Corrigido"] = (b.Resolution.isin(RESOLUCOES_CORRIGIDO) & b.Resolution_Date.notna()).astype(int)
     fim = b.Resolution_Date.where(b.Resolution_Date.notna(), b.Last_Update_Date)
@@ -285,16 +391,19 @@ def main():
     b["Situacao_Final"] = np.select([b.Evento_Corrigido == 1, b.Resolution_Date.notna()],
                                     ["corrigido", "encerrado_sem_correcao"], "aberto_na_coleta")
 
-    # release afetada (a mais antiga publicada entre as versões afetadas)
-    av = affv.join(ver.set_index("Version_ID")[["Release_Date", "Tipo_Release"]], on="Version_ID", how="inner")
-    av = av.sort_values("Release_Date").drop_duplicates("Issue_ID")
-    av = av.join(agg[["Qtd_Itens", "Pct_Features"]], on="Version_ID")
-    av = av.set_index("Issue_ID")
-    b["Qtd_Versoes_Afetadas"] = b.ID.map(affv.groupby("Issue_ID").size()).fillna(0).astype(int)
-    b["Tipo_Release_Afetada"] = b.ID.map(av.Tipo_Release).fillna("sem-versao")
-    b["Dias_Desde_Release_Afetada"] = (b.Creation_Date - b.ID.map(av.Release_Date)).dt.days
-    b["Itens_Release_Afetada"] = b.ID.map(av.Qtd_Itens)
-    b["Pct_Features_Release_Afetada"] = b.ID.map(av.Pct_Features)
+    # release afetada (a mais antiga publicada entre as versões afetadas), reconstruída para o momento da
+    # abertura do bug; as versões do estado final ficam em colunas *_Final, só para a análise de sensibilidade
+    def release_afetada(av_src, suf):
+        av = av_src.join(ver.set_index("Version_ID")[["Release_Date", "Tipo_Release"]], on="Version_ID", how="inner")
+        av = av.sort_values("Release_Date").drop_duplicates("Issue_ID")
+        av = av.join(agg[["Qtd_Itens", "Pct_Features"]], on="Version_ID").set_index("Issue_ID")
+        b["Qtd_Versoes_Afetadas" + suf] = b.ID.map(av_src.groupby("Issue_ID").size()).fillna(0).astype(int)
+        b["Tipo_Release_Afetada" + suf] = b.ID.map(av.Tipo_Release).fillna("sem-versao")
+        b["Dias_Desde_Release_Afetada" + suf] = (b.Creation_Date - b.ID.map(av.Release_Date)).dt.days
+        b["Itens_Release_Afetada" + suf] = b.ID.map(av.Qtd_Itens)
+        b["Pct_Features_Release_Afetada" + suf] = b.ID.map(av.Pct_Features)
+    release_afetada(affv_ini, "")
+    release_afetada(affv_final, "_Final")
 
     # carga do time: bugs abertos no projeto no momento da abertura (abertos antes e ainda não resolvidos)
     todos = iss[iss.Type == "Bug"][["ID", "Project_Key", "Creation_Date", "Resolution_Date"]]
@@ -348,26 +457,29 @@ def main():
     pc["de"], pc["para"] = pc.From_String.map(PRIORIDADE), pc.To_String.map(PRIORIDADE)
     esc = pc[pc.de.notna() & pc.para.notna() & (pc.para > pc.de)].groupby("Issue_ID").size()
     b["Escalou_Prioridade"] = b.ID.map(esc).fillna(0).gt(0).astype(int)
-    b["Alto_Impacto"] = ((b.Qtd_Duplicados > 0) | (b.Escalou_Prioridade == 1)).astype(int)
+    b["Alta_Criticidade"] = ((b.Qtd_Duplicados > 0) | (b.Escalou_Prioridade == 1)).astype(int)
 
     cols_b = ["ID", "Issue_Key", "Project_Key", "Creation_Date", "Resolution_Date",
               "Priority_Inicial", "Prioridade_Nivel", "Title_Len", "Desc_Len", "Desc_Code_Len",
               "Tem_Codigo_Na_Descricao", "Qtd_Componentes", "Qtd_Versoes_Afetadas",
               "Tipo_Release_Afetada", "Dias_Desde_Release_Afetada", "Itens_Release_Afetada",
-              "Pct_Features_Release_Afetada", "Bugs_Abertos_No_Projeto", "Experiencia_Reporter",
+              "Pct_Features_Release_Afetada", "Qtd_Versoes_Afetadas_Final", "Tipo_Release_Afetada_Final",
+              "Dias_Desde_Release_Afetada_Final", "Itens_Release_Afetada_Final", "Pct_Features_Release_Afetada_Final",
+              "Bugs_Abertos_No_Projeto", "Experiencia_Reporter",
               "Mes_Abertura", "Dia_Semana_Abertura", "Tem_Story_Point",
               "Assignee_ID", "Tem_Responsavel", "Carga_Responsavel", "Participacao_Responsavel_No_Projeto",
               "Horas_Apontadas", "Qtd_Reaberturas", "Foi_Reaberto", "Qtd_Duplicados", "Escalou_Prioridade",
-              "Alto_Impacto", "Dias_Para_Corrigir", "Faixa_Correcao"]
+              "Alta_Criticidade", "Dias_Para_Corrigir", "Faixa_Correcao"]
     ren = {"ID": "Issue_ID", "Assignee_ID": "Responsavel_ID", "Title_Len": "Tamanho_Titulo",
            "Desc_Len": "Tamanho_Descricao", "Desc_Code_Len": "Tamanho_Codigo_Descricao"}
     cols_s = [c for c in cols_b if c not in ("Resolution_Date", "Horas_Apontadas", "Qtd_Reaberturas", "Foi_Reaberto",
-                                             "Qtd_Duplicados", "Escalou_Prioridade", "Alto_Impacto",
+                                             "Qtd_Duplicados", "Escalou_Prioridade", "Alta_Criticidade",
                                              "Dias_Para_Corrigir", "Faixa_Correcao")]
     surv = b[cols_s + ["Situacao_Final", "Evento_Corrigido", "Tempo_Dias"]].rename(columns=ren).sort_values("Creation_Date")
     surv.to_csv(os.path.join(OUT, "base_bugs_sobrevivencia.csv"), index=False)
     print(f"base_bugs_sobrevivencia: {len(surv):,} bugs ({surv.Evento_Corrigido.mean():.1%} corrigidos)")
     b = b[b.Evento_Corrigido == 1]
+    FUNIL.append(("Bugs", "corrigidos, com data de resolução (base_bugs)", len(b)))
     b = b[cols_b].rename(columns=ren)
     b = b.sort_values("Creation_Date")
 
@@ -397,6 +509,13 @@ def main():
     spr_itens.to_csv(os.path.join(OUT, "base_itens_sprint.csv"), index=False)
     print(f"base_sprints:  {len(spr_sprints):,} sprints | base_itens_sprint: {len(spr_itens):,} itens planejados")
 
+    eleg = pd.DataFrame(FUNIL, columns=["Base", "Etapa", "Registros"])
+    eleg["Perda_na_Etapa"] = eleg.groupby("Base").Registros.diff().mul(-1)
+    eleg.to_csv(os.path.join(OUT, "elegibilidade.csv"), index=False)
+    diag = pd.DataFrame(list(DIAG.items()), columns=["Diagnóstico", "Valor"])
+    diag.to_csv(os.path.join(OUT, "diagnosticos_reconstrucao.csv"), index=False)
+    print(eleg.to_string(index=False)); print(diag.to_string(index=False))
+
     dicionario = pd.DataFrame([
         # base_bugs
         ("base_bugs", "Issue_ID / Issue_Key", "Identificador do bug na TAWOS / no Jira", "id"),
@@ -407,7 +526,7 @@ def main():
         ("base_bugs", "Tem_Codigo_Na_Descricao", "1 se a descrição traz trecho de código/log", "feature"),
         ("base_bugs", "Qtd_Componentes", "Componentes do sistema associados ao bug", "feature"),
         ("base_bugs", "Qtd_Versoes_Afetadas", "Quantas versões o bug afeta", "feature"),
-        ("base_bugs", "Tipo_Release_Afetada", "major / minor / patch / pre-release / sem-versao", "feature"),
+        ("base_bugs", "Tipo_Release_Afetada", "major / minor / patch / pre-release / sem-versao; versões afetadas reconstruídas para o momento da abertura pelo histórico de alterações", "feature"),
         ("base_bugs", "Dias_Desde_Release_Afetada", "Dias entre a publicação da release afetada e a abertura do bug", "feature"),
         ("base_bugs", "Itens_Release_Afetada / Pct_Features_Release_Afetada", "Tamanho e % de features da release afetada", "feature"),
         ("base_bugs", "Bugs_Abertos_No_Projeto", "Carga do time: bugs em aberto no projeto no dia da abertura", "feature"),
@@ -421,7 +540,7 @@ def main():
         ("base_releases", "Version_ID / Versao / Release_Date", "Release publicada", "id"),
         ("base_releases", "Tipo_Release", "major / minor / patch / pre-release (pelo número da versão)", "feature"),
         ("base_releases", "Dias_Desde_Release_Anterior", "Intervalo para a release anterior do projeto", "feature"),
-        ("base_releases", "Qtd_Itens / Qtd_Features / Qtd_Correcoes / Qtd_Outros", "Composição do que foi entregue (fix version)", "feature"),
+        ("base_releases", "Qtd_Itens / Qtd_Features / Qtd_Correcoes / Qtd_Outros", "Composição do que foi entregue (fix version) NA DATA DE PUBLICAÇÃO, reconstruída pelo histórico", "feature"),
         ("base_releases", "Pct_Features / Pct_Correcoes", "Mix da release", "feature"),
         ("base_releases", "Qtd_Itens_Alta_Prioridade", "Itens entregues com prioridade alta/bloqueante", "feature"),
         ("base_releases", "Story_Points_Total", "Soma de story points (só alguns projetos estimam)", "feature"),
@@ -430,7 +549,10 @@ def main():
         ("base_releases", "Bugs_Pos_Release_Alta", "Idem, só prioridade alta/bloqueante (proxy de impacto em cliente)", "alvo / descritiva"),
         ("base_releases", "Dias_Medianos_Correcao_Pos_Release", "Mediana de dias para corrigir os bugs pós-release", "descritiva"),
         ("base_releases", "Bugs_Por_Item_Entregue", "Bugs pós-release / itens entregues", "descritiva"),
-        ("base_releases", "Alto_Risco", "1 se Bugs_Pos_Release > mediana do projeto", "alvo (classificação)"),
+        ("base_releases", "Mediana_Historica_Bugs", "Mediana de bugs pós-release das releases ANTERIORES do mesmo projeto", "auxiliar"),
+        ("base_releases", "Alto_Risco", "1 se Bugs_Pos_Release > Mediana_Historica_Bugs; -1 quando há menos de três releases anteriores (fora do modelo)", "alvo (classificação)"),
+        ("base_releases", "Bugs_Pos_Release_90d / _365d / _Todas_Versoes", "Sensibilidade: janelas de 90 e 365 dias e contagem em todas as versões afetadas", "sensibilidade"),
+        ("base_releases", "Qtd_Itens_Estado_Final", "Itens vinculados à release no estado final (a composição usada é a da data de publicação)", "descritiva"),
         # novas colunas (perguntas complementares)
         ("base_bugs", "Responsavel_ID", "Id anonimizado do responsável (a TAWOS remove nomes)", "id"),
         ("base_bugs", "Tem_Responsavel", "1 se o bug tem responsável atribuído", "feature (P5)"),
@@ -439,7 +561,8 @@ def main():
         ("base_bugs", "Foi_Reaberto", "1 se o bug foi reaberto ao menos uma vez", "alvo (P7)"),
         ("base_bugs", "Qtd_Duplicados", "Quantos outros reports foram marcados como duplicata dele", "alvo/descritiva (P8)"),
         ("base_bugs", "Escalou_Prioridade", "1 se a prioridade subiu depois da abertura", "alvo/descritiva (P8)"),
-        ("base_bugs", "Alto_Impacto", "1 se teve duplicata OU escalou prioridade (proxy de impacto em cliente)", "alvo (P8)"),
+        ("base_bugs", "Alta_Criticidade", "1 se o bug recebeu duplicata OU teve a prioridade elevada após a abertura (sinal observável de criticidade; não mede impacto real em clientes)", "alvo (P8)"),
+        ("base_bugs", "*_Final (versões afetadas)", "Mesmas variáveis da release afetada, no estado final do registro (só para análise de sensibilidade)", "sensibilidade"),
         ("base_sprints", "Sprint_ID / Sprint / Start_Date / Complete_Date", "Sprint fechado e suas datas", "id"),
         ("base_sprints", "Itens_Planejados", "Itens no sprint até 1 dia após o início (compromisso)", "descritiva (P1)"),
         ("base_sprints", "Itens_Adicionados_Durante / Itens_Removidos_Durante", "Mudança de escopo durante o sprint", "descritiva (P1)"),
@@ -468,6 +591,8 @@ def main():
         b.to_excel(xw, sheet_name="base_bugs", index=False)
         cap.to_excel(xw, sheet_name="base_capacidade_mensal", index=False)
         spr_sprints.to_excel(xw, sheet_name="base_sprints", index=False)
+        eleg.to_excel(xw, sheet_name="elegibilidade", index=False)
+        diag.to_excel(xw, sheet_name="diagnosticos", index=False)
         spr_itens.to_excel(xw, sheet_name="base_itens_sprint", index=False)
 
     print(f"base_bugs:     {len(b):,} bugs")

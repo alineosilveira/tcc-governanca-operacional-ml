@@ -1,0 +1,8 @@
+Diagnóstico,Valor
+Vínculos de fix version (estado final),123087.0
+Vínculos incluídos depois da publicação (retirados),7965.0
+Vínculos removidos depois da publicação (devolvidos),5983.0
+Bugs com versão afetada alterada após a abertura,24718.0
+Sprints: itens com sprint definido na criação (recuperados),9746.0
+Validação sprints: itens cujo sprint final é um sprint incluído,14209.0
+Validação sprints: % reconstruídos como presentes no fechamento desse sprint,92.9

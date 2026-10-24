@@ -1,0 +1,18 @@
+Base,Etapa,Registros,Perda_na_Etapa
+Releases,Versões cadastradas nos dez projetos,2271,
+Releases,publicadas e com data de publicação,2007,264.0
+Releases,com numeração identificável (x.y.z),1638,369.0
+Releases,com ao menos um item entregue,1498,140.0
+Releases,com 180 dias completos de acompanhamento,1426,72.0
+Releases,com pelo menos três itens entregues na data de publicação,1233,193.0
+Releases,com ao menos três releases anteriores no projeto (alvo de alto risco),1203,30.0
+Bugs,Bugs registrados nos dez projetos,111090,
+Bugs,com datas consistentes (resolução não anterior à abertura),111090,-0.0
+Bugs,abertos até 12 meses antes do fim da coleta (base de sobrevivência),105637,5453.0
+Bugs,"corrigidos, com data de resolução (base_bugs)",55649,49988.0
+Sprints,Sprints registrados nos projetos selecionados,1484,
+Sprints,encerrados e com datas de início e fim,1448,36.0
+Sprints,com nome não ambíguo no projeto,1416,32.0
+Sprints,com itens reconstruídos pelo histórico,1395,21.0
+Sprints,com pelo menos três itens planejados e duração de 3 a 60 dias,993,402.0
+Itens de sprint,Itens planejados no início dos sprints incluídos,15189,
